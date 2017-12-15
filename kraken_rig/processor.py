@@ -3,9 +3,23 @@ from collections import OrderedDict
 import pandas as pd
 from datetime import datetime
 
-
 class Processor:
     def __init__(self, market, start_date, end_date, runner=None, frequency=60.0):
+        """
+       the Processoris intended to be the interpreter of the historical order book data.
+
+        :param market: The specific Trading pair that the processor is looking at.
+        :type market: str
+        :param start_date: The starting date for the processor to read data from in seconds since Epoch
+        :type start_date: str
+        :param end_date: The ending date for the processor to stop reading data to in seconds since Epoch.
+        :type end_date: str
+        :param runner: The runner object, which is intended as a wrapper for the user, which will pass data
+        to the user when needed and make sense of the data passed from the processor.
+        :type runner: kraken_rig.runner.Runner
+        :param frequency: The amount of time that passes between each 'step' for the user to make decisions in seconds.
+        :type frequency: float
+        """
         self.df = pd.read_pickle('kraken_' + market + '.pickle')
         self.start_date = start_date
         self.end_date = end_date
@@ -16,6 +30,10 @@ class Processor:
         self.current_candle = {'start': None, 'end': None, 'open': None, 'close': None, 'high': None, 'low': None}
 
     def initialize(self):
+        """
+        allows the user to decide when they wish to initialize the processor, just in case they want to change something
+        in between creating the processor and starting it.
+        """
         self.df = self.df.T
         start = float(datetime.strptime(self.start_date, "%Y-%m-%d %H:%M:%S.%f").timestamp())
         # end = float(datetime.strptime(self.end_date, "%Y-%m-%d %H:%M:%S.%f").timestamp())
@@ -29,10 +47,15 @@ class Processor:
         self.current_candle['end'] = start + 3600 + self.frequency
 
     def save_session_to_dataframe(self, path):
-        dframe = pd.DataFrame(self.runner.additional_records)
+        panda_frames = [x.get_frame_output() for x in self.runner.runtime_analysis.values()]
+        panda_frames.append(self.runner.candles)
+        dframe = pd.concat(panda_frames, axis=1)
         dframe.to_pickle(path)
 
     def run(self):
+        """
+        The 'main loop' of the program, steps through each order book entry and sends the information off to the runner
+        """
         self.initialize()
         for index, row in self.df.iterrows():
             self.candle_substep(row)
@@ -48,6 +71,13 @@ class Processor:
                 # print(entry+": "+type(cur_entry).__name__)
 
     def candle_substep(self, row):
+        """
+        Intended to group the order book transactions into candles for analysis
+
+        :param row: the current order book exchange occurring
+        :type row:
+        :return:
+        """
         if row['price'] is None:
             return
         row['price'] = float(row['price'])

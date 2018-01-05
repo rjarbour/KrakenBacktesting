@@ -4,11 +4,13 @@ import pandas as pd
 from datetime import datetime
 
 class Processor:
-    def __init__(self, market, start_date, end_date, runner=None, frequency=60.0):
+    def __init__(self, file, market, start_date, end_date, runner=None, frequency=60.0):
         """
        the Processoris intended to be the interpreter of the historical order book data.
 
-        :param market: The specific Trading pair that the processor is looking at.
+        :param file: The name of the pickle that has all of the orderbook data.
+        :type file: str
+        :param market: The particular name of the trading pair were working with.
         :type market: str
         :param start_date: The starting date for the processor to read data from in seconds since Epoch
         :type start_date: str
@@ -20,7 +22,7 @@ class Processor:
         :param frequency: The amount of time that passes between each 'step' for the user to make decisions in seconds.
         :type frequency: float
         """
-        self.df = pd.read_pickle('kraken_' + market + '.pickle')
+        self.df = pd.read_pickle(file)
         self.start_date = start_date
         self.end_date = end_date
         self.frequency = frequency
@@ -49,8 +51,24 @@ class Processor:
     def save_session_to_dataframe(self, path):
         panda_frames = [x.get_frame_output() for x in self.runner.runtime_analysis.values()]
         panda_frames.append(self.runner.candles)
+        self.runner.transactions.index += self.frequency
+        panda_frames.append(self.runner.transactions)
         dframe = pd.concat(panda_frames, axis=1)
+
+        dframe['date'] = [datetime.fromtimestamp(x) for x in dframe[dframe.start.notnull()].start] + [x for x in dframe[
+            dframe.start.isnull()].start]
         dframe.to_pickle(path)
+
+    def save_session_to_csv(self, path):
+        panda_frames = [x.get_frame_output() for x in self.runner.runtime_analysis.values()]
+        panda_frames.append(self.runner.candles)
+        self.runner.transactions.index += self.frequency
+        panda_frames.append(self.runner.transactions)
+        dframe = pd.concat(panda_frames, axis=1)
+
+        dframe['date'] = [datetime.fromtimestamp(x) for x in dframe[dframe.start.notnull()].start] + [x for x in dframe[
+            dframe.start.isnull()].start]
+        dframe.to_csv(path)
 
     def run(self):
         """
@@ -101,7 +119,6 @@ class Processor:
                 self.current_candle['close'] = float('%.8g' % self.current_candle['close'])
                 self.current_candle['open'] = float('%.8g' % self.current_candle['open'])
                 self.runner.process_delegator(self.current_candle, 'candle')
-                # print('\nCANDLE:', self.current_candle, '\n')
                 self.current_candle['start'] = self.current_candle['end']
                 self.current_candle['end'] = self.current_candle['end'] + self.frequency
                 self.current_candle['close'] = None

@@ -20,9 +20,6 @@ class Wallet:
         :type volume_cap: float
         """
         self.balance = balances
-        self.volume_cap = volume_cap
-
-        # self.market_count = market_count
 
     def transfer(self, sender, receiver, amount, ratio=1.0, fee=0.0):
         """
@@ -40,19 +37,20 @@ class Wallet:
         :type fee: float
         """
         if sender in self.balance:
-            # print(self.balance[sender], float(amount))
-            if self.balance[sender] < float(amount):
-                raise Exception('Not enough Money in ' + sender + ' to complete transfer!' + str(amount) + ' > ' + str(
-                    self.balance[sender]))
-            else:
-                if receiver in self.balance:
-                    self.balance[receiver] += float('{0:.10f}'.format((amount - (amount * fee)) * ratio)[:-1])
+            if self.balance[sender] < amount:
+                if (amount - self.balance[sender]) >= 0.0000000001:
+                    raise Exception(
+                        'Not enough Money in ' + sender + ' to complete transfer!' + str(amount) + ' > ' + str(
+                            self.balance[sender]))
                 else:
-                    self.balance[receiver] = float('{0:.10f}'.format((amount - (amount * fee)) * ratio)[:-1])
-                self.balance[sender] -= float('{0:.10f}'.format(amount)[:-1])
-                self.balance[sender] = float('{0:.10f}'.format(self.balance[sender])[:-1])
-                self.balance[receiver] = float('{0:.10f}'.format(self.balance[receiver])[:-1])
-                # print('transaction',sender, receiver, self.balance, amount)
+                    amount = self.balance[sender]
+            if receiver in self.balance:
+                self.balance[receiver] += (amount - (amount * fee)) * ratio
+            else:
+                self.balance[receiver] = (amount - (amount * fee)) * ratio
+            self.balance[sender] -= amount
+            self.balance[sender] = float("%.10f" % self.balance[sender])
+            self.balance[receiver] = float("%.10f" % self.balance[receiver])
         else:
             raise Exception('no currency in the wallet of type ' + str(sender))
 
@@ -74,15 +72,12 @@ class Runner:
         self.trading = False
         self.prev_frames = None
         self.fee = 0.001
-        # self.buy_orders = pd.DataFrame(index=self.pandas_index, columns=['open', 'close', 'high', 'low', 'date'])
-        # self.sell_orders = pd.DataFrame(index=self.pandas_index, columns=['open', 'close', 'high', 'low', 'date'])
-        # self.candles = pd.DataFrame(index=self.pandas_index, columns=['open', 'close', 'high', 'low', 'date'])
         self.candles = pd.DataFrame(columns=['high', 'low', 'close', 'open', 'start', 'end'])
         self.runtime_analysis = {}
         self.context = {}
         self.currency_sought = currency_sought
         self.currency_offered = currency_offered
-
+        self.transactions = pd.DataFrame(columns=['buy', 'sell', 'loss', 'balance'])
         # Get and adds all of the trends listed internally dynamically...
 
         trend_names = [x for x, y in trends.__dict__.items() if type(y) == type]
@@ -110,32 +105,9 @@ class Runner:
         value = 0.0
         if self.currency_sought in self.wallet.balance:
             value += self.wallet.balance[self.currency_sought] * current_value
-        if self.currency_sought + '_sell_order' in self.wallet.balance:
-            value += self.wallet.balance[self.currency_sought + '_sell_order'] * current_value
         if self.currency_offered in self.wallet.balance:
             value += self.wallet.balance[self.currency_offered]
-        if self.currency_offered + '_buy_order' in self.wallet.balance:
-            value += self.wallet.balance[self.currency_offered + '_buy_order']
         return value
-
-    def record(self, time_frame, **kwargs):
-        """
-        -----------MAY BECOME OUTDATED DUE TO HOW TRENDS ARE BEING IMPLEMENTED!!!-----------
-        -----------TIME_FRAME NEEDS TO BE A DATETIME RATHER THAN A FLOAT!!!-----------
-
-        Tells the runner to record a specific value at a specific time-stamp for use after testing / debugging..
-
-        :param time_frame: The date in the test when the value was recorded in milliseconds since Epoch
-        :type time_frame: float
-        :param kwargs: The data to be added as a keyword pair... IE {SMA: some_data....}
-        """
-        if kwargs is not None:
-            for key in kwargs.keys():
-                if time_frame in self.runtime_analysis:
-                    self.runtime_analysis[time_frame].update(
-                        {copy.deepcopy(key): copy.deepcopy(kwargs[key])})
-                else:
-                    self.runtime_analysis[time_frame] = {copy.deepcopy(key): copy.deepcopy(kwargs[key])}
 
     def process_delegator(self, obj, flag):
         """
@@ -145,51 +117,50 @@ class Runner:
         :param flag: Tells the runner exactly what the object is as a String.
         """
         if flag == 'candle':
-            print(obj)
             self.candles.loc[obj['start']] = {'start': obj['start'], 'end': obj['end'], 'close': obj['close'],
                                               'open': obj['open'], 'low': obj['low'], 'high': obj['high']}
             [x.step(obj['end']) for x in self.runtime_analysis.values()]
-            # [self.runtime_analysis[x].step(obj['end']) for x in self.runtime_analysis.keys()]
+            if 'stop_losses' in self.context:
+                for entry in self.context['stop_losses']:
+                    if obj['close'] < entry['trigger']:
+                        self.__process_stop_loss(entry)
+                        self.on_stop_loss_trigger(entry)
             self.process_candle()
+            self.transactions.at[self.candles.index.values[-1], 'balance'] = self.get_total_value(obj['close'])
         if flag == 'closed_trade':
             if obj.type == 'b':
-                if 'buy_orders' in self.context:
-                    for entry in self.context['buy_orders']:
-                        if obj['price'] < entry['price']:
-                            obj['volume'] = float(obj['volume'])
-                            if obj['volume'] > entry['volume']:
-                                # print('internal b')
-                                self.__fill_buy_order(entry)
-                                self.buys_filled.append(entry)
-                                self.on_buy_order_filled(entry)
-                            else:
-                                # print('internal p b')
-                                new_order = self.__fill_partial_buy_order(entry, obj['volume'])
-                                # self.buys_filled.append(partial_entry)
-                                self.on_buy_order_partially_filled(entry, new_order)
+                self._process_orderbook_buy(obj)
             else:
-                if 'sell_orders' in self.context:
-                    for entry in self.context['sell_orders']:
-                        # print('sell price',obj['price'],entry['price'])
-                        if entry['price'] < obj['price']:
-                            if float(obj['volume']) > entry['volume']:
-                                # print('internal s: order vol:',str(obj['volume']),'price:',str(obj['price']))
-                                self.__fill_sell_order(entry)
-                                self.sells_filled.append(entry)
-                                self.on_sell_order_filled(entry)
-                            else:
-                                # print('internal p s')
-                                partial_entry = self.__fill_partial_sell_order(entry, obj['volume'])
-                                self.sells_filled.append(partial_entry)
-                                self.on_sell_order_partially_filled(entry, obj['volume'])
-
-            if 'stop_limits' in self.context:
-                for entry in self.context['stop_limits']:
-                    if obj['price'] < entry['stop']:
-                        order = self.__process_stop_limit(entry)
-                        self.on_stop_limit_trigger(entry, order)
+                self._process_orderbook_sell(obj)
 
             self.process_historical_trade_event(obj)
+
+    def _process_orderbook_buy(self, order):
+        if 'buy_orders' in self.context:
+            for entry in self.context['buy_orders']:
+                if order['price'] < entry['price']:
+                    order['volume'] = float(order['volume'])
+                    if order['volume'] > entry['volume']:
+                        self.__fill_buy_order(entry)
+                        self.transactions.at[self.candles.index.values[-1], 'buy'] = entry['volume']
+                        self.on_buy_order_filled(entry)
+                    else:
+                        self.transactions.at[self.candles.index.values[-1], 'buy'] = order['volume']
+                        new_order = self.__fill_partial_buy_order(entry, order['volume'])
+                        self.on_buy_order_partially_filled(entry, new_order)
+
+    def _process_orderbook_sell(self, order):
+        if 'sell_orders' in self.context:
+            for entry in self.context['sell_orders']:
+                if entry['price'] < order['price']:
+                    if float(order['volume']) > entry['volume']:
+                        self.__fill_sell_order(entry)
+                        self.transactions.at[self.candles.index.values[-1], 'sell'] = entry['volume']
+                        self.on_sell_order_filled(entry)
+                    else:
+                        self.transactions.at[self.candles.index.values[-1], 'sell'] = order['volume']
+                        new_order = self.__fill_partial_sell_order(entry, order['volume'])
+                        self.on_sell_order_partially_filled(entry, new_order['volume'])
 
     def place_buy_order(self, price, volume):
         """
@@ -205,9 +176,7 @@ class Runner:
         :return: The buy order created and added to the order book, used to reference the order you created, so dont
         lose this.
         """
-        price = float('{0:.10f}'.format(price)[:-1])
-        volume = float('{0:.10f}'.format(volume)[:-1])
-        if self.wallet.balance[self.currency_offered] >= float('{0:.10f}'.format(price * volume)[:-1]):
+        if self.wallet.balance[self.currency_offered] >= float("%.10f" % (price * volume)):
             if 'buy_orders' not in self.context:
                 self.context['buy_orders'] = [{
                     'price': price,
@@ -222,8 +191,6 @@ class Runner:
                     'currency_offered': self.currency_offered,
                     'currency_sought': self.currency_sought
                 })
-            self.wallet.transfer(self.currency_offered, self.currency_offered + '_buy_order',
-                                 float('{0:.10f}'.format(price * volume)[:-1]))
             return self.context['buy_orders'][-1]
         else:
             raise Exception('Cant try to buy more than your balance contains! balance: ' + str(
@@ -243,10 +210,8 @@ class Runner:
         :return: A copy of the order added to the order book, used to retrieve the order if you want to modify
         or remove the order.
         """
-        price = float('{0:.10f}'.format(price)[:-1])
-        volume = float('{0:.10f}'.format(volume)[:-1])
         if self.currency_offered in self.wallet.balance:
-            if self.wallet.balance[self.currency_offered] >= volume:
+            if self.wallet.balance[self.currency_sought] >= volume:
                 if 'sell_orders' not in self.context:
                     self.context['sell_orders'] = [{
                         'price': price,
@@ -261,47 +226,56 @@ class Runner:
                         'currency_offered': self.currency_offered,
                         'currency_sought': self.currency_sought
                     })
-                    # print(currency_sought, volume)
-                if self.currency_sought + '_sell_order' == 'usd_sell_order':
-                    raise Exception('Dom currency sell!')
-                self.wallet.transfer(self.currency_sought, self.currency_sought + '_sell_order', volume)
                 return self.context['sell_orders'][-1]
             else:
                 raise Exception('Cant try to sell more than your balance contains! balance: ' + str(
                     self.wallet.balance[self.currency_offered]) + ' amount: ' + str((price * volume)))
 
-    def place_stop_limit(self, stop, limit, order):
+    def place_stop_loss(self, price_trigger, volume):
         """
         -----------EVENTUALLY NEEDS TO SUPPORT MULTIPLE CURRENCIES, CURRENTLY JUST HANDLES THE INITIAL ONE!!!-----------
         -----------CHANGE THE RETURN TO BE A UNIQUE IDENTIFIER IN THE ORDER BOOK, RATHER THAN THE ENTRY!!!-----------
         -----------CHANGE THE ORDER TO BE AN ACTUAL ORDER OBJECT INSTEAD OF A DICTIONARY!!!-----------
 
-        Places a stop limit that will trigger at the specific limit price. When the limit is reached, the order
-        provided will be added to the corresponding order book. wait what?
+        Places a stop limit that will trigger at the specific price_trigger. When the limit is reached, The volume of
+        currency will be sold at the next opportunity.
 
-        :param stop: What is this?
-        :param limit: The price of the currency that triggers the order to be added to the order book.
-        :type limit: float
-        :param order: The structure of an order as a dictionary
-        {price: float, volume: float, currency_offered: str, currency_sought: str}
+        :param price_trigger: The price that the stop loss will trigger at.
+        :type price_trigger: float
+        :param volume: the amount of currency to sell
         :type order: dictionary
         :return: The stop limit as a dictionary, used to remove and modify the order for later use.
         """
-        stop = float('{0:.10f}'.format(stop)[:-1])
-        limit = float('{0:.10f}'.format(limit)[:-1])
-        if 'stop_limits' not in self.context:
-            self.context['stop_limits'] = [{
-                'order': order,
-                'stop': stop,
-                'limit': limit
+        if 'stop_losses' not in self.context:
+            self.context['stop_losses'] = [{
+                'trigger': price_trigger,
+                'volume': volume
             }]
         else:
-            self.context['stop_limits'].append({
-                'order': order,
-                'stop': stop,
-                'limit': limit
+            self.context['stop_losses'].append({
+                'trigger': price_trigger,
+                'volume': volume
             })
-            return self.context['stop_limits'][-1]
+        return self.context['stop_losses'][-1]
+
+    def clear_buy_orders(self):
+        """
+        removes all buy orders from the order book.
+
+        :return: None
+        """
+        for order in self.context['buy_orders']:
+            self.remove_buy_order(order)
+
+    def clear_sell_orders(self):
+        """
+        removes all buy orders from the order book.
+
+        :return: None
+        """
+        for order in self.context['sell_orders']:
+            self.remove_sell_order(order)
+
 
     def remove_buy_order(self, order):
         """
@@ -319,14 +293,9 @@ class Runner:
         elif order not in self.context['buy_orders']:
             raise Exception('Cant remove buy order: buy order does not exist!')
         else:
-            self.wallet.transfer(
-                order['currency_offered'] + '_buy_order',
-                order['currency_offered'],
-                float('{0:.10f}'.format(order['price'] * order['volume'])[:-1])
-            )
             self.context['buy_orders'].remove(order)
 
-    def remove_stop_limit(self, order):
+    def remove_stop_loss(self, order):
         """
         -----------EVENTUALLY NEEDS TO SUPPORT MULTIPLE CURRENCIES, CURRENTLY JUST HANDLES THE INITIAL ONE!!!-----------
         -----------CHANGE THE RETURN TO BE A UNIQUE IDENTIFIER IN THE ORDER BOOK, RATHER THAN THE ENTRY!!!-----------
@@ -337,11 +306,9 @@ class Runner:
         :param order: the specific stop limit to remove
         :type order: Dictionary
         """
-        if 'stop_limits' not in self.context:
+        if 'stop_losses' not in self.context:
             raise Exception('Cant remove stop limit: no stop limit has ever been made!')
-        for entry in self.context['stop_limits']:
-            if order == entry['order']:
-                self.context['stop_limits'].remove(entry)
+        self.context['stop_losses'].remove(order)
 
     def remove_sell_order(self, order):
         """
@@ -359,11 +326,6 @@ class Runner:
         elif order not in self.context['sell_orders']:
             raise Exception('Cant remove sell order: sell order does not exist!')
         else:
-            self.wallet.transfer(
-                order['currency_sought'] + '_sell_order',
-                order['currency_sought'],
-                float('{0:.10f}'.format(order['volume'])[:-1])
-            )
             self.context['sell_orders'].remove(order)
 
     def append_sell_order(self, order, new_order):
@@ -417,7 +379,7 @@ class Runner:
         :type order: Dictionary
         """
         self.wallet.transfer(
-            order['currency_sought'] + '_sell_order',
+            order['currency_sought'],
             order['currency_offered'],
             order['volume'],
             ratio=order['price'],
@@ -429,7 +391,6 @@ class Runner:
             raise Exception('Cant remove sell order: sell order does not exist!')
         else:
             self.context['sell_orders'].remove(order)
-            self.__if_stop_remove_stop(order)
 
     def __fill_partial_sell_order(self, order, volume):
         """
@@ -439,18 +400,17 @@ class Runner:
         :param order: The specific order that's being filled.
         :type order: Dictionary
         """
-        volume = float('{0:.10f}'.format(volume)[:-1])
         self.wallet.transfer(
-            order['currency_sought'] + '_sell_order',
+            order['currency_sought'],
             order['currency_offered'],
             volume,
             ratio=order['price'],
             fee=self.fee
         )
         new_order = order
-        new_order['volume'] = float('{0:.10f}'.format(order['volume'] - volume)[:-1])
+        new_order['volume'] = (order['volume'] - volume)
         self.append_sell_order(order, new_order)
-        self.__if_stop_remove_stop(order)
+        return new_order
 
     def __fill_buy_order(self, order):
         """
@@ -460,12 +420,11 @@ class Runner:
         :param order: The specific order that's being filled.
         :type order: Dictionary
         """
-        # print(order['currency_offered']+'_buy_order', order['currency_sought'], order['volume'], order['price'])
         self.wallet.transfer(
-            order['currency_offered'] + '_buy_order',
+            order['currency_offered'],
             order['currency_sought'],
-            float('{0:.10f}'.format(order['price'] * order['volume'])[:-1]),
-            ratio=(float('{0:.10f}'.format(1 / order['price'])[:-1])),
+            order['price'] * order['volume'],
+            ratio=(1 / order['price']),
             fee=self.fee
         )
         if 'buy_orders' not in self.context:
@@ -483,47 +442,39 @@ class Runner:
         :param order: The specific order that's being filled.
         :type order: Dictionary
         """
-        volume = float('{0:.10f}'.format(volume)[:-1])
         self.wallet.transfer(
-            order['currency_offered'] + '_buy_order',
+            order['currency_offered'],
             order['currency_sought'],
-            float('{0:.10f}'.format(order['price'] * volume)[:-1]),
-            ratio=(float('{0:.10f}'.format(1 / order['price'])[:-1])),
+            order['price'] * volume,
+            ratio=(1 / order['price']),
             fee=self.fee
         )
         new_order = order
-        # print('DOUBLE INTERNAL: old:',str(order['volume']),'filled:',str(volume))
-        new_order['volume'] = float('{0:.10f}'.format(order['volume'] - volume)[:-1])
+        new_order['volume'] = order['volume'] - volume
         self.append_buy_order(order, new_order)
         return new_order
 
-    def __if_stop_remove_stop(self, order):
+    def __process_stop_loss(self, stop_loss):
         """
-        -----------IMPLEMENTATION IS TERRIBLE, MAKE STOP LIMITS GO INTO THE ORDER BOOK WHEN THEY TRIGGER!!!-----------
+        sells off the currency 0.4% less than the close value that triggered the stop loss; speculative price
 
-        checks if the order being filled is a stop order, if it is, remove the stop limit from the listing.
-
-        :param order: The specific order that's being filled.
-        :type order: Dictionary
+        :param stop_loss: The specific stop limit that's being filled.
+        :type stop_loss: Dictionary
         """
-        if 'stop_limits' in self.context:
-            for entry in self.context['stop_limits']:
-                if order == entry['order']:
-                    self.context['stop_limits'].remove(entry)
-
-    def __process_stop_limit(self, stop_limit):
-        """
-        -----------FIGURE OUT WHY THIS IS EVEN HERE!!!-----------
-
-        Some sort of redundant stop limit handling... Im not sure why this exists.
-
-        :param stop_limit: The specific stop limit that's being filled.
-        :type stop_limit: Dictionary
-        """
-        self.context['stop_limits'].remove(stop_limit)
-        self.remove_sell_order(stop_limit['order'])
-        order = self.place_sell_order(stop_limit['limit'], stop_limit['order']['volume'])
-        return order
+        self.context['stop_losses'].remove(stop_loss)
+        vol = None
+        if self.wallet.balance[self.currency_sought] > stop_loss['volume']:
+            vol = stop_loss['volume']
+        else:
+            vol = self.wallet.balance[self.currency_sought]
+        self.wallet.transfer(
+            self.currency_sought,
+            self.currency_offered,
+            vol,
+            ratio=(stop_loss['trigger'] - (stop_loss['trigger'] * 0.04)),
+            fee=self.fee
+        )
+        self.transactions.at[self.candles.index.values[-1], 'loss'] = stop_loss['volume']
 
     def __process_historical_trade_event(self, row):
         """
@@ -582,12 +533,12 @@ class Runner:
         """
         raise NotImplementedError()
 
-    def on_stop_limit_trigger(self, stop_limit, order):
+    def on_stop_loss_trigger(self, order):
         """
         Intended as a handler for the user to fill logic each time a stop limit is triggered.
 
-        :param stop_limit: The stop limit that was triggered.
-        :type stop_limit: Dictionary
+        :param stop_loss: The stop limit that was triggered.
+        :type stop_loss: Dictionary
         :param order: the order that triggered the stop limit.
         :type order: Dictionary
         """

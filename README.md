@@ -10,15 +10,16 @@ Currently the only functionality of this library is to show the wallet's balance
 To run this script you will need 
   * python 3.4
   * Pandas
-  * MatPlotLib
-  * TA-Lib
 
 
 # How do I use this?
-Included in this project is a file titled 'kraken_rig_runner' which I have been using for testing purposes and should be easy enough adapt and follow; I will write a more in depth guide on usage in the future.
+Kraken_rig_runner is a commented example to see the flow of the program:
+Typically you want to set your trade logic apart from your indicator or trend declarations.
+Using the example plotting file you will get this!:
+![alt text](https://image.prntscr.com/image/Uneoch7gQ9CnpdU-nhyylg.png)
 
 # to-do
-  * plotting
-  * adding basic analytical functions
-  * fix precision error
-  * clean and refine code already in place
+  * generate the required javascript and css to produce a graph
+  * work on the techan branch to include other features I want
+  * include volume, expiring orderbook requests, and many basic finacial indicators and trends
+  * include many trading pairs at once
